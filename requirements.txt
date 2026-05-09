@@ -5,3 +5,4 @@ arabic-reshaper
 python-bidi
 Pillow==9.5.0
 requests
+gradio-client
