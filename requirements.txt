@@ -3,5 +3,5 @@ instagrapi==1.17.0
 google-generativeai
 arabic-reshaper
 python-bidi
-Pillow
+Pillow==9.5.0
 requests
