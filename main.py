@@ -5,17 +5,22 @@ import time
 import requests
 import traceback
 import sys
+import shutil
 from PIL import Image, ImageDraw, ImageFont
 import google.generativeai as genai
 from moviepy.editor import ImageClip, concatenate_videoclips, CompositeVideoClip, VideoFileClip, vfx
 import arabic_reshaper
 from bidi.algorithm import get_display
-from instagrapi import Client
-from instagrapi.exceptions import ChallengeRequired # تمت الإضافة لالتقاط طلب التحقق من إنستقرام
+
+# استدعاء مكتبة إنستقرام
+from instagrapi import Client as InstaClient
+from instagrapi.exceptions import ChallengeRequired
+
+# استدعاء مكتبة الذكاء الاصطناعي (مع تغيير اسمها لمنع التعارض)
+from gradio_client import Client as GradioClient, handle_file
 
 # --- الإعدادات والمتغيرات البيئية ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-HF_TOKEN = os.getenv("HF_TOKEN")
 IG_USERNAME = os.getenv("IG_USERNAME")
 IG_PASSWORD = os.getenv("IG_PASSWORD")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -28,6 +33,7 @@ FOLDERS_MAP = {
     "ha": "معاوز حليسي"
 }
 
+# --- دوال المساعدة والسجلات ---
 def load_history():
     if os.path.exists("history.json"):
         with open("history.json", "r") as f:
@@ -43,7 +49,6 @@ def send_telegram_msg(text):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text[:4000]}
     requests.post(url, json=payload)
 
-# --- دالة جديدة: إرسال الفيديو كملف لتليجرام ---
 def send_telegram_video(video_path, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption[:1000]}
@@ -52,8 +57,9 @@ def send_telegram_video(video_path, caption):
             files = {"video": video_file}
             requests.post(url, data=payload, files=files)
     except Exception as e:
-        send_telegram_msg(f"⚠️ تنبيه: تعذر إرسال الفيديو لتليجرام، ولكن سيتم إكمال النشر.\nالخطأ: {str(e)}")
+        send_telegram_msg(f"⚠️ تنبيه: تعذر إرسال الفيديو لتليجرام لمعاينته، سيتم الإكمال.\nالخطأ: {str(e)}")
 
+# --- دوال الذكاء الاصطناعي (الوصف + تحريك الفيديو) ---
 def generate_caption(types_used):
     try:
         model = genai.GenerativeModel('gemini-pro')
@@ -65,23 +71,32 @@ def generate_caption(types_used):
         return "تشكيلة جديدة وفاخرة من بازهير للمعاوز. #معاوز #اليمن #بازهير"
 
 def generate_video_hf(image_path, prompt):
-    API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-video-diffusion-img2vid-xt"
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     try:
-        with open(image_path, "rb") as f:
-            data = f.read()
-        response = requests.post(API_URL, headers=headers, data=data, timeout=40)
-        if response.status_code == 200:
-            output_path = f"temp_{int(time.time())}.mp4"
-            with open(output_path, "wb") as f:
-                f.write(response.content)
+        send_telegram_msg(f"⏳ جاري التواصل مع ذكاء Hugging Face (عبر Gradio) لتحريك صورة معوز. قد يستغرق الأمر بعض الوقت في الطابور...")
+        
+        # الاتصال بالمساحة الرسمية المجانية
+        client = GradioClient("stabilityai/stable-video-diffusion")
+        
+        # إرسال الصورة وضبط إعدادات حركة هادئة
+        result = client.predict(
+            image=handle_file(image_path),
+            motion_bucket_id=127,      
+            noise_aug_strength=0.1,    
+            api_name="/video"
+        )
+        
+        if result and os.path.exists(result):
+            output_path = f"ai_video_{int(time.time())}_{random.randint(1,1000)}.mp4"
+            shutil.copy(result, output_path)
+            send_telegram_msg("✅ تم توليد فيديو الذكاء الاصطناعي بنجاح!")
             return output_path
-        else:
-            send_telegram_msg(f"⚠️ تنبيه: سيرفر الذكاء الاصطناعي للفيديو غير متاح حالياً (كود: {response.status_code}). جاري استخدام التحريك البديل.")
+            
     except Exception as e:
-        pass
+        send_telegram_msg(f"⚠️ تنبيه: سيرفر الذكاء الاصطناعي مشغول حالياً. سيتم استخدام التحريك البديل (MoviePy) لضمان عدم توقف العمل.\nالخطأ: {str(e)[:100]}")
+    
     return None
 
+# --- دوال المونتاج والتحريك البديل ---
 def apply_ken_burns(image_path, duration=5):
     clip = ImageClip(image_path).set_duration(duration)
     clip = clip.resize(lambda t: 1 + 0.02 * t).set_position(('center', 'center'))
@@ -89,7 +104,7 @@ def apply_ken_burns(image_path, duration=5):
 
 def create_arabic_text_clip(text, size=(1080, 200), fontsize=70, font_path="taj.ttf"):
     if not os.path.exists(font_path):
-        raise FileNotFoundError(f"ملف الخط '{font_path}' غير موجود في المشروع! يرجى التأكد من رفعه وتسميته بشكل صحيح.")
+        raise FileNotFoundError(f"ملف الخط '{font_path}' غير موجود في المشروع!")
 
     reshaped_text = arabic_reshaper.reshape(text)
     bidi_text = get_display(reshaped_text)
@@ -111,6 +126,7 @@ def create_arabic_text_clip(text, size=(1080, 200), fontsize=70, font_path="taj.
     img.save(img_path)
     return ImageClip(img_path)
 
+# --- المسار الرئيسي للعمل ---
 def main():
     history = load_history()
     selected_images = []
@@ -147,12 +163,14 @@ def main():
         history.append(item["path"])
         types_used.append(item["type_name"])
 
+    # 1. معالجة الصور وتحويلها لفيديوهات
     video_clips = []
     for item in selected_images:
         img_path = item["path"]
         type_name = item["type_name"]
         
-        hf_vid_path = generate_video_hf(img_path, f"A cinematic slow pan of a traditional woven garment, high quality, keeping complex geometric patterns intact.")
+        # تجربة الحل العبقري، وإذا فشل ننتقل بهدوء للبديل
+        hf_vid_path = generate_video_hf(img_path, "")
         
         if hf_vid_path:
             clip = VideoFileClip(hf_vid_path).set_duration(5).resize(height=1920, width=1080)
@@ -166,6 +184,7 @@ def main():
         
         video_clips.append(CompositeVideoClip([clip, txt_clip]))
 
+    # 2. دمج المقاطع
     final_video = concatenate_videoclips(video_clips, method="compose")
     
     if os.path.exists("logo.png"):
@@ -175,13 +194,13 @@ def main():
     output_filename = f"bazheer_reel_{int(time.time())}.mp4"
     final_video.write_videofile(output_filename, fps=24, codec="libx264", audio_codec="aac")
 
-    # --- تحديث جذري لقسم إنستقرام ليتصرف كتطبيق هاتف ويدعم الانتظار ---
-    cl = Client()
-    
-    # محاكاة إعدادات الهاتف في اليمن لتفادي الحظر
-    cl.set_country("YE")
-    cl.set_timezone_offset(3 * 3600)
-    cl.set_locale("ar_AE")
+    # 3. إعداد الوصف وإرسال المعاينة
+    caption = generate_caption(list(set(types_used)))
+    send_telegram_msg("⏳ جاري إرسال الفيديو المصنوع إلى تليجرام لمعاينته...")
+    send_telegram_video(output_filename, f"🎥 الفيديو الجاهز للنشر\n\nالوصف:\n{caption}")
+
+    # 4. النشر على إنستقرام (مع دعم الجلسات وتأكيد الدخول)
+    cl = InstaClient()
     
     if os.path.exists("session.json"):
         cl.load_settings("session.json")
@@ -190,33 +209,27 @@ def main():
         try:
             cl.login(IG_USERNAME, IG_PASSWORD)
         except ChallengeRequired:
-            # حالة: إنستقرام يطلب تأكيد الهوية رسمياً
-            send_telegram_msg("⚠️ تنبيه أستاذ محمد: إنستقرام يطلب التحقق من هويتك لدواعي أمنية. يرجى فتح التطبيق أو إيميلك الآن والموافقة (الضغط على 'هذا أنا' / 'This was me'). الكود سينتظر 90 ثانية ثم يكمل...")
+            send_telegram_msg("⚠️ أستاذ محمد: إنستقرام يطلب التحقق من هويتك. افتح إيميلك الآن واضغط 'هذا أنا' (This was me). الكود سينتظر 90 ثانية...")
             time.sleep(90)
             cl.login(IG_USERNAME, IG_PASSWORD)
         except Exception as e:
-            # حالة: رسالة البريد الإلكتروني المشبوهة
-            if "We can send you an email" in str(e) or "suspicious" in str(e).lower():
-                send_telegram_msg("⚠️ تنبيه أستاذ محمد: إنستقرام أوقف الدخول وطلب التحقق. يرجى فتح التطبيق أو إيميلك الآن والموافقة. الكود سينتظر 90 ثانية ثم يحاول الإكمال...")
+            error_str = str(e).lower()
+            if "we can send you an email" in error_str or "بريد إلكتروني" in error_str or "suspicious" in error_str:
+                send_telegram_msg("⚠️ أستاذ محمد: إنستقرام أرسل بريداً للتحقق. افتح إيميلك الآن ووافق على الدخول. الكود سينتظر 90 ثانية...")
                 time.sleep(90)
                 cl.login(IG_USERNAME, IG_PASSWORD)
             else:
                 raise e
 
         cl.dump_settings("session.json")
-        caption = generate_caption(list(set(types_used)))
         
-        # 1. إرسال الفيديو إلى تليجرام أولاً
-        send_telegram_msg("⏳ جاري إرسال الفيديو المصنوع إلى تليجرام لمعاينته...")
-        send_telegram_video(output_filename, f"🎥 الفيديو الجاهز للنشر\n\nالوصف المقترح:\n{caption}")
-        
-        # 2. النشر على إنستقرام
+        # عملية الرفع للإنستقرام
         media = cl.clip_upload(output_filename, caption)
         
-        # 3. حفظ السجل وإرسال رابط المقطع
+        # حفظ السجل وإرسال رابط الريل
         save_history(history)
         reel_url = f"https://www.instagram.com/reel/{media.code}/" if hasattr(media, 'code') else "تم النشر بنجاح."
-        send_telegram_msg(f"✅ أهلاً أستاذ محمد، تم بحمد الله نشر مقطع اليوم بنجاح على حساب بازهير للمعاوز!\n\nرابط المقطع:\n{reel_url}")
+        send_telegram_msg(f"✅ أهلاً أستاذ محمد، تم نشر مقطع اليوم بنجاح على حساب بازهير للمعاوز!\n\nالرابط:\n{reel_url}")
         
     except Exception as e:
         send_telegram_msg(f"❌ عذراً أستاذ محمد، حدث خطأ أثناء عملية النشر على إنستقرام:\n{str(e)}")
@@ -226,6 +239,6 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         error_details = traceback.format_exc()
-        error_msg = f"❌ أهلاً أستاذ محمد، حدث خطأ برمجي:\n\n{str(e)}\n\nالتفاصيل:\n{error_details[:500]}"
+        error_msg = f"❌ خطأ برمجي أدى لتوقف السكربت:\n{str(e)}\n\nالتفاصيل:\n{error_details[:500]}"
         send_telegram_msg(error_msg)
         sys.exit(1)
