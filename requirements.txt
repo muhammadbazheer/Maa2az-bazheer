@@ -1,0 +1,7 @@
+moviepy==1.0.3
+instagrapi==1.17.0
+google-generativeai
+arabic-reshaper
+python-bidi
+Pillow
+requests
