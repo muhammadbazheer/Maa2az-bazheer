@@ -80,7 +80,7 @@ def apply_ken_burns(image_path, duration=5):
     clip = clip.resize(lambda t: 1 + 0.02 * t).set_position(('center', 'center'))
     return clip
 
-def create_arabic_text_clip(text, size=(1080, 200), fontsize=70, font_path="font.ttf"):
+def create_arabic_text_clip(text, size=(1080, 200), fontsize=20, font_path="taj.ttf"):
     reshaped_text = arabic_reshaper.reshape(text)
     bidi_text = get_display(reshaped_text)
     
