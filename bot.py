@@ -23,9 +23,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 # قاموس مسميات المجلدات
 FOLDERS_MAP = {
     "sh": "معاوز شحري",
-    "ha": "معاوز حليسي",
-    "sa": "معاوز صنعاني",
-    "lah": "معاوز لحجي"
+    "ha": "معاوز حليسي"
 }
 
 # --- دوال المساعدة (History & Telegram) ---
@@ -54,7 +52,6 @@ def generate_caption(types_used):
 
 def generate_video_hf(image_path, prompt):
     # محاولة الاتصال بـ Hugging Face API لتوليد الفيديو (تتطلب API يدعم Image-to-Video)
-    # نظراً لأن الـ APIs المجانية تتغير، نضع طلب قياسي، وفي حال الفشل ننتقل فوراً لخطة الطوارئ
     API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-video-diffusion-img2vid"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     try:
@@ -77,7 +74,7 @@ def apply_ken_burns(image_path, duration=5):
     clip = clip.resize(lambda t: 1 + 0.02 * t).set_position(('center', 'center'))
     return clip
 
-# --- إنشاء نصوص عربية صحيحة (لتفادي مشكلة ImageMagick في السيرفرات) ---
+# --- إنشاء نصوص عربية صحيحة ---
 def create_arabic_text_clip(text, size=(1080, 200), fontsize=70, font_path="font.ttf"):
     reshaped_text = arabic_reshaper.reshape(text)
     bidi_text = get_display(reshaped_text)
@@ -110,31 +107,42 @@ def main():
     selected_images = []
     types_used = []
     
-    # 1. اختيار 3 صور من مجلدات مختلفة لم تستخدم مسبقاً
+    # 1. اختيار 3 صور (مع ضمان التنوع من المجلدين)
     base_img_dir = "images"
-    folders = [f for f in os.listdir(base_img_dir) if os.path.isdir(os.path.join(base_img_dir, f))]
-    random.shuffle(folders)
+    sh_dir = os.path.join(base_img_dir, "sh")
+    ha_dir = os.path.join(base_img_dir, "ha")
     
-    for folder in folders:
-        if len(selected_images) >= 3:
-            break
-        folder_path = os.path.join(base_img_dir, folder)
-        images = [i for i in os.listdir(folder_path) if i.endswith(('.jpg', '.png', '.jpeg'))]
-        random.shuffle(images)
-        for img in images:
-            img_full_path = os.path.join(folder_path, img)
-            if img_full_path not in history:
-                selected_images.append({
-                    "path": img_full_path,
-                    "type_name": FOLDERS_MAP.get(folder, "معاوز يمنية فاخرة")
-                })
-                history.append(img_full_path)
-                types_used.append(FOLDERS_MAP.get(folder, "بازهير"))
-                break
-
-    if len(selected_images) < 3:
+    # جلب الصور التي لم تستخدم مسبقاً
+    sh_images = [os.path.join(sh_dir, img) for img in os.listdir(sh_dir) if img.endswith(('.jpg', '.png', '.jpeg')) and os.path.join(sh_dir, img) not in history] if os.path.exists(sh_dir) else []
+    ha_images = [os.path.join(ha_dir, img) for img in os.listdir(ha_dir) if img.endswith(('.jpg', '.png', '.jpeg')) and os.path.join(ha_dir, img) not in history] if os.path.exists(ha_dir) else []
+    
+    random.shuffle(sh_images)
+    random.shuffle(ha_images)
+    
+    # التحقق من وجود 3 صور جديدة على الأقل
+    if len(sh_images) + len(ha_images) < 3:
         send_telegram_msg("⚠️ تنبيه أستاذ محمد: لا يوجد صور جديدة كافية في المجلدات لصناعة الريل.")
         return
+        
+    # سحب صورة من كل مجلد لضمان التنوع (إن وجدت)
+    if sh_images:
+        selected_images.append({"path": sh_images.pop(0), "type_name": FOLDERS_MAP["sh"]})
+    if ha_images:
+        selected_images.append({"path": ha_images.pop(0), "type_name": FOLDERS_MAP["ha"]})
+        
+    # تجميع باقي الصور لسحب الصورة الثالثة عشوائياً
+    all_remaining = []
+    for img in sh_images: all_remaining.append({"path": img, "type_name": FOLDERS_MAP["sh"]})
+    for img in ha_images: all_remaining.append({"path": img, "type_name": FOLDERS_MAP["ha"]})
+    
+    random.shuffle(all_remaining)
+    if all_remaining and len(selected_images) < 3:
+        selected_images.append(all_remaining.pop(0))
+        
+    # تحديث السجل والأنواع المستخدمة
+    for item in selected_images:
+        history.append(item["path"])
+        types_used.append(item["type_name"])
 
     # 2. معالجة الفيديوهات
     video_clips = []
@@ -181,7 +189,7 @@ def main():
         
         caption = generate_caption(list(set(types_used)))
         
-        # النشر (ملاحظة: سيتم رفع الفيديو كما هو، وفي حال رغبت بربطه بصوت عبر IG يتم تمرير audio_id هنا في إعدادات متقدمة)
+        # النشر
         media = cl.clip_upload(output_filename, caption)
         
         # 6. تحديث التاريخ وإرسال التقرير
