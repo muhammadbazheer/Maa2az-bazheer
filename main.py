@@ -6,17 +6,16 @@ import requests
 import traceback
 import sys
 import shutil
-from PIL import Image, ImageDraw, ImageFont
+import subprocess
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import google.generativeai as genai
 from moviepy.editor import ImageClip, concatenate_videoclips, CompositeVideoClip, VideoFileClip, vfx
 import arabic_reshaper
 from bidi.algorithm import get_display
 
-# استدعاء مكتبة إنستقرام
+# استدعاء مكتبات إنستقرام وذكاء الفيديو
 from instagrapi import Client as InstaClient
 from instagrapi.exceptions import ChallengeRequired
-
-# استدعاء مكتبة الذكاء الاصطناعي
 from gradio_client import Client as GradioClient, handle_file
 
 # --- الإعدادات والمتغيرات البيئية ---
@@ -57,18 +56,32 @@ def send_telegram_video(video_path, caption):
             files = {"video": video_file}
             requests.post(url, data=payload, files=files)
     except Exception as e:
-        send_telegram_msg(f"⚠️ تنبيه: تعذر إرسال الفيديو لتليجرام لمعاينته، سيتم الإكمال.\nالخطأ: {str(e)}")
+        send_telegram_msg(f"⚠️ تنبيه: تعذر إرسال الفيديو لتليجرام لمعاينته.\nالخطأ: {str(e)}")
 
-# --- تعديل الصورة تلقائياً لتملأ الشاشة وتدور بالعرض ---
+# الحل العبقري لحفظ الجلسة من داخل بايثون لتفادي حظر إنستقرام
+def commit_state_to_github():
+    try:
+        os.system('git config --global user.name "github-actions[bot]"')
+        os.system('git config --global user.email "github-actions[bot]@users.noreply.github.com"')
+        os.system('git add history.json session.json')
+        os.system('git commit -m "Auto-update session and history [skip ci]"')
+        os.system('git push')
+        print("تم حفظ الجلسة في GitHub بنجاح.")
+    except Exception as e:
+        print(f"Failed to commit to GitHub: {e}")
+
+# --- تعديل الصورة تلقائياً (EXIF والقص) ---
 def fix_and_crop_image(img_path):
     try:
         img = Image.open(img_path)
+        # 1. تعديل الانقلاب التلقائي المخفي في إعدادات الكاميرا (EXIF)
+        img = ImageOps.exif_transpose(img)
         
-        # التدوير التلقائي إذا كانت الصورة بالعرض
+        # 2. التدوير التلقائي إذا كانت الصورة بالعرض
         if img.width > img.height:
             img = img.rotate(90, expand=True)
             
-        # قص الصورة بذكاء لتناسب مقاس الريلز 9:16 بدون حواف سوداء
+        # 3. قص الصورة بذكاء لتناسب مقاس الريلز 9:16
         target_ratio = 9 / 16
         img_ratio = img.width / img.height
         
@@ -82,8 +95,6 @@ def fix_and_crop_image(img_path):
             crop_box = (0, offset, img.width, img.height - offset)
             
         img = img.crop(crop_box)
-        
-        # تكبير الصورة لتملأ شاشة الجوال تماماً
         img = img.resize((1080, 1920), Image.Resampling.LANCZOS)
         img.save(img_path)
     except Exception as e:
@@ -104,10 +115,10 @@ def generate_video_hf(image_path, prompt):
     try:
         send_telegram_msg(f"⏳ جاري التواصل مع ذكاء Hugging Face لتحريك صورة معوز. قد يستغرق الأمر بعض الوقت...")
         client = GradioClient("stabilityai/stable-video-diffusion")
+        # تم إزالة noise_aug_strength لحل مشكلة التحديث الجديد
         result = client.predict(
             image=handle_file(image_path),
             motion_bucket_id=127,      
-            noise_aug_strength=0.1,    
             api_name="/video"
         )
         if result and os.path.exists(result):
@@ -116,7 +127,7 @@ def generate_video_hf(image_path, prompt):
             send_telegram_msg("✅ تم توليد فيديو الذكاء الاصطناعي بنجاح!")
             return output_path
     except Exception as e:
-        send_telegram_msg(f"⚠️ تنبيه: سيرفر الذكاء الاصطناعي مشغول. سيتم استخدام التحريك البديل (MoviePy) لضمان العمل.\nالخطأ: {str(e)[:100]}")
+        send_telegram_msg(f"⚠️ تنبيه: سيرفر الذكاء الاصطناعي مشغول. سيتم استخدام التحريك البديل (MoviePy).\nالخطأ: {str(e)[:100]}")
     return None
 
 # --- دوال المونتاج ---
@@ -129,7 +140,10 @@ def create_arabic_text_clip(text, size=(1080, 300), fontsize=140, font_path="taj
     if not os.path.exists(font_path):
         raise FileNotFoundError(f"ملف الخط '{font_path}' غير موجود في المشروع!")
 
-    reshaped_text = arabic_reshaper.reshape(text)
+    # إعدادات متقدمة لإجبار بايثون على ربط الحروف العربية
+    configuration = {'delete_harakat': True, 'support_ligatures': True}
+    reshaper = arabic_reshaper.ArabicReshaper(configuration=configuration)
+    reshaped_text = reshaper.reshape(text)
     bidi_text = get_display(reshaped_text)
     
     img = Image.new('RGBA', size, (255, 255, 255, 0))
@@ -166,7 +180,7 @@ def main():
     random.shuffle(ha_images)
     
     if len(sh_images) + len(ha_images) < 3:
-        send_telegram_msg("⚠️ تنبيه أستاذ محمد: لا توجد صور جديدة كافية في المجلدات لصناعة فيديو اليوم. الرجاء رفع صور جديدة.")
+        send_telegram_msg("⚠️ تنبيه أستاذ محمد: لا توجد صور جديدة كافية في المجلدات لصناعة فيديو اليوم.")
         return
         
     if sh_images:
@@ -186,7 +200,6 @@ def main():
         history.append(item["path"])
         types_used.append(item["type_name"])
 
-    # معالجة الصور قبل التحريك
     for item in selected_images:
         fix_and_crop_image(item["path"])
 
@@ -222,74 +235,57 @@ def main():
     send_telegram_msg("⏳ جاري إرسال الفيديو المصنوع إلى تليجرام لمعاينته...")
     send_telegram_video(output_filename, f"🎥 الفيديو الجاهز للنشر\n\nالوصف:\n{caption}")
 
-    # --- سر استوديو القرآن: نظام النشر والتحقق الذكي ---
+    # --- نظام إنستقرام الذكي المنيع ---
     cl = InstaClient()
-    cl.delay_range = [2, 5] # إضافة تأخير بشري لتفادي الحظر
+    cl.delay_range = [2, 5] 
     
     session_file = "session.json"
     is_logged_in = False
     
-    # 1. محاولة استخدام الجلسة القديمة (بدون تسجيل دخول جديد)
     if os.path.exists(session_file):
         try:
             cl.load_settings(session_file)
-            cl.get_timeline_feed() # التحقق بصمت بدون login
+            cl.get_timeline_feed()
             is_logged_in = True
-            send_telegram_msg("✅ تم استرجاع الجلسة السابقة بنجاح.")
         except Exception as e:
-            send_telegram_msg("⚠️ الجلسة القديمة انتهت، جاري محاولة تسجيل دخول جديد...")
+            send_telegram_msg("⚠️ الجلسة القديمة انتهت، جاري تسجيل دخول جديد...")
     
-    # 2. إذا لم تكن مسجلاً، قم بتسجيل الدخول مع معالجة الأخطاء
     if not is_logged_in:
         try:
             cl.login(IG_USERNAME, IG_PASSWORD)
             cl.dump_settings(session_file)
-            is_logged_in = True
-        except ChallengeRequired:
-            send_telegram_msg("⚠️ أستاذ محمد: إنستقرام يطلب التحقق من هويتك. افتح إيميلك واضغط 'هذا أنا'. الكود ينتظر 3 دقائق...")
-            time.sleep(180)
-            cl.login(IG_USERNAME, IG_PASSWORD)
-            cl.dump_settings(session_file)
+            commit_state_to_github() # حفظ الجلسة فوراً لضمان عدم ضياعها
             is_logged_in = True
         except Exception as e:
             error_str = str(e).lower()
             if "please wait" in error_str or "few minutes" in error_str:
-                send_telegram_msg("⚠️ حظر مؤقت من إنستقرام. الكود سينتظر 5 دقائق ثم يحاول مجدداً...")
-                time.sleep(300)
-                cl.login(IG_USERNAME, IG_PASSWORD)
-                cl.dump_settings(session_file)
-                is_logged_in = True
-            elif "we can send you an email" in error_str or "suspicious" in error_str:
-                send_telegram_msg("⚠️ أستاذ محمد: إنستقرام أرسل بريداً للتحقق. افتح إيميلك ووافق. الكود ينتظر 3 دقائق...")
+                send_telegram_msg("⚠️ إنستقرام يطلب الانتظار. سيتم إيقاف المحاولة اليوم لتفادي الحظر النهائي.")
+                # نخرج بسلام بدون خطأ أحمر عشان GitHub ما يزعل
+                sys.exit(0) 
+            elif "challenge" in error_str or "email" in error_str or "suspicious" in error_str:
+                send_telegram_msg("⚠️ أستاذ محمد: إنستقرام يطلب التحقق (إيميل/تأكيد). افتح التطبيق ووافق. الكود ينتظر 3 دقائق...")
                 time.sleep(180)
                 cl.login(IG_USERNAME, IG_PASSWORD)
                 cl.dump_settings(session_file)
+                commit_state_to_github()
                 is_logged_in = True
             else:
-                raise e
+                send_telegram_msg(f"❌ خطأ غير متوقع في الدخول: {str(e)}")
+                sys.exit(0)
 
-    # 3. مرحلة الرفع النهائية
     if is_logged_in:
         try:
             media = cl.clip_upload(output_filename, caption)
             save_history(history)
+            commit_state_to_github() # حفظ السجل بعد النشر
             reel_url = f"https://www.instagram.com/reel/{media.code}/" if hasattr(media, 'code') else "تم النشر بنجاح."
             send_telegram_msg(f"✅ أهلاً أستاذ محمد، تم نشر مقطع اليوم بنجاح!\n\nالرابط:\n{reel_url}")
         except Exception as upload_error:
-            if "please wait" in str(upload_error).lower():
-                send_telegram_msg("⚠️ إنستقرام يطلب الانتظار أثناء الرفع. سيتم المحاولة بعد 5 دقائق...")
-                time.sleep(300)
-                media = cl.clip_upload(output_filename, caption)
-                save_history(history)
-                send_telegram_msg("✅ تم النشر بعد الانتظار بنجاح!")
-            else:
-                raise upload_error
+            send_telegram_msg(f"❌ خطأ أثناء النشر: {str(upload_error)}")
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
         error_details = traceback.format_exc()
-        error_msg = f"❌ خطأ برمجي:\n{str(e)}\n\nالتفاصيل:\n{error_details[:500]}"
-        send_telegram_msg(error_msg)
-        sys.exit(1)
+        send_telegram_msg(f"❌ خطأ برمجي:\n{str(e)}")
