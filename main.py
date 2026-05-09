@@ -27,7 +27,6 @@ FOLDERS_MAP = {
     "ha": "معاوز حليسي"
 }
 
-# --- دوال المساعدة (History & Telegram) ---
 def load_history():
     if os.path.exists("history.json"):
         with open("history.json", "r") as f:
@@ -40,11 +39,9 @@ def save_history(history):
 
 def send_telegram_msg(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    # قص النص إذا كان طويلاً جداً لتفادي رفض تليجرام للرسالة
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text[:4000]}
     requests.post(url, json=payload)
 
-# --- دوال الذكاء الاصطناعي مع تتبع الأخطاء ---
 def generate_caption(types_used):
     try:
         model = genai.GenerativeModel('gemini-pro')
@@ -53,11 +50,11 @@ def generate_caption(types_used):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        send_telegram_msg(f"⚠️ تنبيه أستاذ محمد: حدث خطأ في Gemini API أثناء كتابة الوصف. تم استخدام وصف بديل.\nالخطأ: {str(e)}")
         return "تشكيلة جديدة وفاخرة من بازهير للمعاوز. #معاوز #اليمن #بازهير"
 
 def generate_video_hf(image_path, prompt):
-    API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-video-diffusion-img2vid"
+    # تم تغيير رابط النموذج لنسخة XT لعلها تعمل مجاناً
+    API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-video-diffusion-img2vid-xt"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     try:
         with open(image_path, "rb") as f:
@@ -69,27 +66,27 @@ def generate_video_hf(image_path, prompt):
                 f.write(response.content)
             return output_path
         else:
-            send_telegram_msg(f"⚠️ تنبيه أستاذ محمد: سيرفر Hugging Face مشغول أو به خطأ (كود: {response.status_code}). سيتم الانتقال لخطة التحريك البديلة.")
+            send_telegram_msg(f"⚠️ تنبيه: سيرفر الذكاء الاصطناعي للفيديو غير متاح حالياً (كود: {response.status_code}). جاري استخدام التحريك البديل.")
     except Exception as e:
-        send_telegram_msg(f"⚠️ تنبيه أستاذ محمد: فشل الاتصال بسيرفر Hugging Face للفيديو.\nالخطأ: {str(e)}\nسيتم استخدام التحريك البديل.")
+        pass
     return None
 
-# --- خطة الطوارئ والمونتاج ---
 def apply_ken_burns(image_path, duration=5):
     clip = ImageClip(image_path).set_duration(duration)
     clip = clip.resize(lambda t: 1 + 0.02 * t).set_position(('center', 'center'))
     return clip
 
-def create_arabic_text_clip(text, size=(1080, 200), fontsize=20, font_path="taj.ttf"):
+def create_arabic_text_clip(text, size=(1080, 200), fontsize=70, font_path="taj.ttf"):
+    # التأكد من وجود ملف الخط قبل المحاولة
+    if not os.path.exists(font_path):
+        raise FileNotFoundError(f"ملف الخط '{font_path}' غير موجود في المشروع! يرجى التأكد من رفعه وتسميته بشكل صحيح.")
+
     reshaped_text = arabic_reshaper.reshape(text)
     bidi_text = get_display(reshaped_text)
     
     img = Image.new('RGBA', size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
-    try:
-        font = ImageFont.truetype(font_path, fontsize)
-    except:
-        font = ImageFont.load_default()
+    font = ImageFont.truetype(font_path, fontsize)
     
     text_bbox = draw.textbbox((0, 0), bidi_text, font=font)
     text_w = text_bbox[2] - text_bbox[0]
@@ -104,7 +101,6 @@ def create_arabic_text_clip(text, size=(1080, 200), fontsize=20, font_path="taj.
     img.save(img_path)
     return ImageClip(img_path)
 
-# --- المسار الرئيسي ---
 def main():
     history = load_history()
     selected_images = []
@@ -155,7 +151,8 @@ def main():
             
         clip = clip.fx(vfx.fadein, 0.5).fx(vfx.fadeout, 0.5)
         
-        txt_clip = create_arabic_text_clip(type_name, font_path="font.ttf")
+        # تم تعديل مسار الخط هنا بشكل نهائي
+        txt_clip = create_arabic_text_clip(type_name, font_path="taj.ttf")
         txt_clip = txt_clip.set_position(('center', 0.8), relative=True).set_duration(4).set_start(0.5).crossfadein(0.5).crossfadeout(0.5)
         
         video_clips.append(CompositeVideoClip([clip, txt_clip]))
@@ -184,13 +181,11 @@ def main():
     except Exception as e:
         send_telegram_msg(f"❌ عذراً أستاذ محمد، حدث خطأ أثناء عملية النشر على إنستقرام:\n{str(e)}")
 
-# --- نظام التقاط الأخطاء الشامل ---
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # التقاط أي خطأ فادح لم يتم توقعه وإرساله للتليجرام
         error_details = traceback.format_exc()
-        error_msg = f"❌ أهلاً أستاذ محمد، حدث خطأ برمجي أدى لتوقف السكربت بالكامل:\n\n{str(e)}\n\nالتفاصيل التقنية (للمبرمج):\n{error_details[:500]}"
+        error_msg = f"❌ أهلاً أستاذ محمد، حدث خطأ برمجي:\n\n{str(e)}\n\nالتفاصيل:\n{error_details[:500]}"
         send_telegram_msg(error_msg)
         sys.exit(1)
